@@ -16,14 +16,15 @@ from stock_predictor.assets.features import price_features
 from stock_predictor.config import MLFLOW_TRACKING_URI
 
 
-def make_training_frame() -> pd.DataFrame:
+def make_training_frame(price_features_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build a tiny training dataset from our existing assets.
+    Build a tiny training dataset from an input feature DataFrame.
 
-    This is intentionally simple: it lets us prove the end-to-end
-    training + MLflow flow before we add real market data ingestion.
+    This keeps the training logic decoupled from ingestion/orchestration.
+    Dagster can pass `price_features` directly, and this function just prepares
+    labels and drops invalid rows.
     """
-    df = price_features(raw_prices())
+    df = price_features_df.copy()
 
     # Target: will tomorrow's close be higher than today's close?
     df["target_up"] = (df["close_price"].shift(-1) > df["close_price"]).astype(int)
@@ -102,13 +103,23 @@ def evaluate(model: Pipeline, X: pd.DataFrame, y: pd.Series) -> dict[str, float]
     }
 
 
-def main() -> None:
+def main(price_features_df: pd.DataFrame | None = None) -> None:
+    """
+    Train models and log to MLflow.
+
+    If `price_features_df` is provided, we use it (Dagster path).
+    If not, we create it from local assets (standalone/dev path).
+    """
     # 1) Tell MLflow where the tracking server is
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment("stock-predictor")
 
-    # 2) Build training data
-    df = make_training_frame()
+    # 2) Get features (Dagster passes them; standalone mode builds them)
+    if price_features_df is None:
+        price_features_df = price_features(raw_prices())
+
+    df = make_training_frame(price_features_df)
+
     feature_cols = ["close_price", "daily_change"]
     target_col = "target_up"
 
@@ -127,7 +138,6 @@ def main() -> None:
     ]
 
     best_name = None
-    best_model = None
     best_metric = -1.0
     best_metrics: dict[str, float] = {}
 
@@ -139,29 +149,23 @@ def main() -> None:
             metrics = evaluate(pipe, X_val, y_val)
             mlflow.log_metrics(metrics)
 
-            # Log some basic parameters (kept simple)
             mlflow.log_param("model_type", name)
             mlflow.log_param("feature_cols", ",".join(feature_cols))
             mlflow.log_param("n_train_rows", len(train_df))
             mlflow.log_param("n_val_rows", len(val_df))
 
-            # Log the whole sklearn Pipeline (includes preprocessing + model)
             mlflow.sklearn.log_model(
                 sk_model=pipe,
                 artifact_path="model",
                 registered_model_name="stock-predictor-model",
             )
 
-            # Choose best by F1 (common for imbalanced labels); fallback to accuracy
             score = metrics.get("val_f1", 0.0)
-
             if score > best_metric:
                 best_metric = score
                 best_name = name
-                best_model = pipe
                 best_metrics = metrics
 
-    # 5) Print summary for your terminal
     print("Best model:", best_name)
     print("Best metrics:", best_metrics)
 

@@ -3,3 +3,5 @@ dagster-webserver
 pandas
 scikit-learn
 mlflow
+fastapi
+uvicorn

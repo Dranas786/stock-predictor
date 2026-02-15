@@ -100,6 +100,20 @@ services:
       -h 0.0.0.0
       -p 3000
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: stock-predictor-api
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      # Inside Docker, the API reaches MLflow via service name
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8000:8000"
+
 volumes:
   postgres_data:
   minio_data:
